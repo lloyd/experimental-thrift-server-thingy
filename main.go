@@ -45,7 +45,7 @@ func main() {
 			fmt.Printf("%v\n", server.Stats())
 		}
 	}()
-	if err := server.Listen("127.0.0.1:8080"); err != nil {
+	if err := server.Listen("10.0.0.7:8080"); err != nil {
 		fmt.Fprintf(os.Stderr, "can't bind: %s", err)
 		os.Exit(1)
 	}

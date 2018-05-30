@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net"
+	"runtime"
 	//	"runtime"
 	"sync"
 	"sync/atomic"
@@ -11,6 +12,8 @@ import (
 )
 
 type ThriftLogFunction func(format string, args ...interface{})
+
+type TooBusyMessageFunction func() thrift.WritableStruct
 
 type ThriftFramework struct {
 	pmap         map[string]thrift.ProcessorFunction
@@ -23,17 +26,25 @@ type ThriftFramework struct {
 	workchan     chan work
 	wg           sync.WaitGroup
 	logfunc      ThriftLogFunction
+	toobusyfn    TooBusyMessageFunction
 }
 
 type Processor interface {
 	ProcessorMap() map[string]thrift.ProcessorFunction
 }
 
+var defaultTooBusyMsg = thrift.NewApplicationException(
+	thrift.UNKNOWN_APPLICATION_EXCEPTION, "too busy")
+
 func NewThriftFramework() *ThriftFramework {
 	return &ThriftFramework{
 		pmap:        map[string]thrift.ProcessorFunction{},
-		workerCount: 1, //runtime.NumCPU() * 2, // XXX: configurable concurrency!?
-		backlogSize: 0, // runtime.NumCPU() * 2,
+		workerCount: runtime.NumCPU() * 2, // XXX: configurable concurrency!?
+		backlogSize: runtime.NumCPU() * 2,
+		toobusyfn: func() thrift.WritableStruct {
+			// default too busy message is an application exception
+			return defaultTooBusyMsg
+		},
 	}
 }
 
@@ -164,6 +175,8 @@ func (tf *ThriftFramework) reader(conn net.Conn) {
 	// write goroutine. NOTE: golang best practice for a hot server
 	// is this.  one go-routine for reading, one for writing.
 	ochan := make(chan work)
+
+	// XXX: fix send on closed channel when client connection goes away
 	defer close(ochan)
 	go tf.writer(prot, ochan)
 
@@ -184,7 +197,7 @@ func (tf *ThriftFramework) reader(conn net.Conn) {
 			exc := thrift.NewApplicationException(thrift.UNKNOWN_METHOD, "Unknown function "+name)
 			// XXX: concurrency error.  We really need to be writing this on the connection's
 			// write goroutine
-			fmt.Printf("RISKY BEHAVIOR\n")
+			fmt.Printf("RISKY BEHAVIOR >%s<\n", name)
 			prot.WriteMessageBegin(name, thrift.EXCEPTION, seqId)
 			exc.Write(prot)
 			prot.WriteMessageEnd()
@@ -206,10 +219,17 @@ func (tf *ThriftFramework) reader(conn net.Conn) {
 			request:   request,
 			writechan: ochan,
 		}
-
 		// now lets' try to process said work
 		// XXX: buffered chan with non-blocking write
-		tf.workchan <- wrk
+		select {
+		case tf.workchan <- wrk:
+		default:
+			// worker backlog is full!  let's write TOOBUSY
+			// XXX increment load shed counter
+			wrk.response = tf.toobusyfn()
+			ochan <- wrk
+		}
+
 	}
 }
 

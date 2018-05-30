@@ -5,13 +5,17 @@
 package main
 
 import (
-	"../gen-go/reverse"
 	"flag"
 	"fmt"
-	thrift "github.com/facebook/fbthrift-go"
 	"math"
 	"os"
 	"strconv"
+	"sync"
+	"sync/atomic"
+
+	"../gen-go/reverse"
+	thrift "github.com/facebook/fbthrift-go"
+	"github.com/youtube/vitess/go/timer"
 	//	"sync"
 	"time"
 )
@@ -32,72 +36,76 @@ func main() {
 	flag.Usage = Usage
 	var host string
 	var protocol string
-	var trans thrift.Transport
 	_ = strconv.Atoi
 	_ = math.Abs
 	flag.Usage = Usage
-	flag.StringVar(&host, "h", "10.0.7.190:8080", "Specify host and port")
+	flag.StringVar(&host, "h", "127.0.0.1:8080", "Specify host and port")
 	flag.StringVar(&protocol, "P", "binary", "Specify the protocol (binary, compact, simplejson, json)")
 	flag.Parse()
 
 	connectClient := func() (*reverse.ReverseClient, error) {
 		var err error
-		fmt.Printf("  >newsocket\n")
+		var trans thrift.Transport
 		trans, err = thrift.NewSocket(thrift.SocketAddr(host), thrift.SocketTimeout(time.Second*30))
 		if err != nil {
 			return nil, err
 		}
-		fmt.Printf("  >open\n")
+
 		if err := trans.Open(); err != nil {
 			return nil, err
 		}
-		fmt.Printf("  >protofact\n")
-		var protocolFactory thrift.ProtocolFactory
-		switch protocol {
-		case "compact":
-			protocolFactory = thrift.NewCompactProtocolFactory()
-			break
-		case "simplejson":
-			protocolFactory = thrift.NewSimpleJSONProtocolFactory()
-			break
-		case "json":
-			protocolFactory = thrift.NewJSONProtocolFactory()
-			break
-		case "binary", "":
-			protocolFactory = thrift.NewBinaryProtocolFactoryDefault()
-			break
-		default:
-			fmt.Fprintln(os.Stderr, "Invalid protocol specified: ", protocol)
-			Usage()
-			os.Exit(1)
-		}
-		fmt.Printf("  >clientfact\n")
-		client := reverse.NewReverseClientFactory(trans, protocolFactory)
-		fmt.Printf("  <clientfact\n")
+
+		client := reverse.NewReverseClient(
+			trans,
+			thrift.NewBinaryProtocolTransport(trans),
+			thrift.NewBinaryProtocolTransport(trans),
+		)
 		return client, nil
 	}
-	//	var wg sync.WaitGroup
-	for i := 0; i < 10000; i++ {
-		fmt.Printf(">connecting %d\n", i)
-		client, err := connectClient()
-		fmt.Printf("<connected\n")
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "failure: %s\n", err)
-			continue
-		}
+	var wg sync.WaitGroup
 
-		//			for j := 0; j < 10; j++ {
-		//		time.Sleep(time.Duration(i%20) + 30*time.Second)
+	var queries uint64
+	var failures uint64
+	var conns int64
+	t := timer.NewTimer(time.Second)
+	t.Start(func() {
+		qps := atomic.SwapUint64(&queries, 0)
+		failps := atomic.SwapUint64(&failures, 0)
+		connps := atomic.LoadInt64(&conns)
+		fmt.Printf("%d connections: %d QPS (%d errors)\n", connps, qps, failps)
+	})
 
-		//fmt.Printf("%s\n", x)
-		fmt.Printf(">doing\n")
-		if _, err = client.Do(fmt.Sprintf("%d: this is a string", i)); err != nil {
-			fmt.Printf("ERROR: %s\n", err)
-		}
-		//			}
-		fmt.Printf(">closing\n")
-		client.Close()
-		fmt.Printf("<closed %d\n", i)
+	for i := 0; i < 15000; i++ {
+		time.Sleep(time.Millisecond)
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			client, err := connectClient()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "failure: %s\n", err)
+				atomic.AddUint64(&failures, 1)
+				return
+			}
+			defer client.Close()
+
+			atomic.AddInt64(&conns, 1)
+			defer atomic.AddInt64(&conns, -1)
+
+			for j := 0; j < 500; j++ {
+				time.Sleep(time.Millisecond * 200)
+				//time.Sleep(time.Duration(i%20) + 100*time.Millisecond)
+				//fmt.Printf("%s\n", x)
+				if _, err = client.Do(fmt.Sprintf("%d: this is a string", i)); err != nil {
+					atomic.AddUint64(&failures, 1)
+					//					fmt.Printf("ERROR: %s\n", err)
+				} else {
+					atomic.AddUint64(&queries, 1)
+				}
+			}
+
+		}(i)
 	}
 	fmt.Printf("waiting for completion\n")
+	wg.Wait()
+	t.Stop()
 }
