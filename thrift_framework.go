@@ -21,8 +21,8 @@ type ThriftFramework struct {
 	connCount    int64
 	workingCount int64
 	writerCount  int64
-	workerCount  int
-	backlogSize  int
+	workerCount  uint
+	backlogSize  uint
 	workchan     chan work
 	wg           sync.WaitGroup
 	logfunc      ThriftLogFunction
@@ -39,8 +39,8 @@ var defaultTooBusyMsg = thrift.NewApplicationException(
 func NewThriftFramework() *ThriftFramework {
 	return &ThriftFramework{
 		pmap:        map[string]thrift.ProcessorFunction{},
-		workerCount: runtime.NumCPU() * 2, // XXX: configurable concurrency!?
-		backlogSize: runtime.NumCPU() * 2,
+		workerCount: uint(runtime.NumCPU() * 2), // XXX: configurable concurrency!?
+		backlogSize: uint(runtime.NumCPU() * 2),
 		toobusyfn: func() thrift.WritableStruct {
 			// default too busy message is an application exception
 			return defaultTooBusyMsg
@@ -66,6 +66,21 @@ func (tf *ThriftFramework) Stats() (stats TFStats) {
 
 func (tf *ThriftFramework) SetErrorLogger(logfunc ThriftLogFunction) *ThriftFramework {
 	tf.logfunc = logfunc
+	return tf
+}
+
+func (tf *ThriftFramework) SetTooBusyException(tooBusyFn TooBusyMessageFunction) *ThriftFramework {
+	tf.toobusyfn = tooBusyFn
+	return tf
+}
+
+func (tf *ThriftFramework) SetWorkerCount(workers uint) *ThriftFramework {
+	tf.workerCount = workers
+	return tf
+}
+
+func (tf *ThriftFramework) SetWorkBacklog(backlogSize uint) *ThriftFramework {
+	tf.backlogSize = backlogSize
 	return tf
 }
 
@@ -116,7 +131,7 @@ func (tf *ThriftFramework) Serve() error {
 	}
 
 	tf.workchan = make(chan work, tf.backlogSize)
-	for i := 0; i < tf.workerCount; i++ {
+	for i := uint(0); i < tf.workerCount; i++ {
 		tf.wg.Add(1)
 		go tf.worker(tf.workchan)
 	}

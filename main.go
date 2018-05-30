@@ -7,6 +7,7 @@ import (
 	"time"
 
 	reverseif "./gen-go/reverse"
+	thrift "github.com/facebook/fbthrift-go"
 )
 
 type ReverseImpl struct {
@@ -14,6 +15,9 @@ type ReverseImpl struct {
 
 func (ri *ReverseImpl) Do(input string) (r string, err error) {
 	//	log.Printf("Do called with %q", input)
+	for i := 0; i < 1000000; i++ {
+
+	}
 	return input, nil
 }
 
@@ -33,12 +37,13 @@ func (ri *ReverseImpl) DoReturn() (string, error) {
 }
 
 func main() {
-
 	processor := reverseif.NewReverseProcessor(&ReverseImpl{})
 	server := NewThriftFramework().AddProcessor(processor).SetErrorLogger(
 		func(format string, args ...interface{}) {
 			log.Printf(format, args...)
-		})
+		}).SetTooBusyException(func() thrift.WritableStruct {
+		return &reverseif.TooBusyException{}
+	})
 	go func() {
 		for {
 			time.Sleep(time.Second)

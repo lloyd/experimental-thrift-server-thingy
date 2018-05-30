@@ -1,11 +1,15 @@
 namespace go   reverse
 
+exception TooBusyException {
+}
+
 service Reverse {
   string Do(1: string input)
+    throws (1: TooBusyException extb),
 
-  void DoNothing()
+  void DoNothing(),
 
-  string DoReturn()
+  string DoReturn(),
 
-  void DoArg(1: string input)
+  void DoArg(1: string input),
 }

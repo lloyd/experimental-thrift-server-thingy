@@ -7,9 +7,7 @@ package main
 import (
 	"flag"
 	"fmt"
-	"math"
 	"os"
-	"strconv"
 	"sync"
 	"sync/atomic"
 
@@ -21,7 +19,7 @@ import (
 )
 
 func Usage() {
-	fmt.Fprintln(os.Stderr, "Usage of ", os.Args[0], " [-h host:port] [-u url] [-f[ramed]] function [arg1 [arg2...]]:")
+	fmt.Fprintln(os.Stderr, "Usage of ", os.Args[0], " [-h host:port]")
 	flag.PrintDefaults()
 	fmt.Fprintln(os.Stderr, "\nFunctions:")
 	fmt.Fprintln(os.Stderr, "  string Do(string input)")
@@ -35,12 +33,8 @@ func Usage() {
 func main() {
 	flag.Usage = Usage
 	var host string
-	var protocol string
-	_ = strconv.Atoi
-	_ = math.Abs
 	flag.Usage = Usage
 	flag.StringVar(&host, "h", "127.0.0.1:8080", "Specify host and port")
-	flag.StringVar(&protocol, "P", "binary", "Specify the protocol (binary, compact, simplejson, json)")
 	flag.Parse()
 
 	connectClient := func() (*reverse.ReverseClient, error) {
@@ -75,7 +69,7 @@ func main() {
 		fmt.Printf("%d connections: %d QPS (%d errors)\n", connps, qps, failps)
 	})
 
-	for i := 0; i < 15000; i++ {
+	for i := 0; i < 1000; i++ {
 		time.Sleep(time.Millisecond)
 		wg.Add(1)
 		go func(i int) {
@@ -91,8 +85,7 @@ func main() {
 			atomic.AddInt64(&conns, 1)
 			defer atomic.AddInt64(&conns, -1)
 
-			for j := 0; j < 500; j++ {
-				time.Sleep(time.Millisecond * 200)
+			for j := 0; j < 10000; j++ {
 				//time.Sleep(time.Duration(i%20) + 100*time.Millisecond)
 				//fmt.Printf("%s\n", x)
 				if _, err = client.Do(fmt.Sprintf("%d: this is a string", i)); err != nil {
