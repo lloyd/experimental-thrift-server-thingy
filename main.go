@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	reverseif "./gen-go/reverse"
 )
@@ -12,7 +13,7 @@ type ReverseImpl struct {
 }
 
 func (ri *ReverseImpl) Do(input string) (r string, err error) {
-	log.Printf("Do called with %q", input)
+	//	log.Printf("Do called with %q", input)
 	return input, nil
 }
 
@@ -38,6 +39,12 @@ func main() {
 		func(format string, args ...interface{}) {
 			log.Printf(format, args...)
 		})
+	go func() {
+		for {
+			time.Sleep(time.Second)
+			fmt.Printf("%v\n", server.Stats())
+		}
+	}()
 	if err := server.Listen("127.0.0.1:8080"); err != nil {
 		fmt.Fprintf(os.Stderr, "can't bind: %s", err)
 		os.Exit(1)

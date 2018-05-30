@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 	"net"
-	"runtime"
+	//	"runtime"
 	"sync"
 	"sync/atomic"
 
@@ -13,14 +13,16 @@ import (
 type ThriftLogFunction func(format string, args ...interface{})
 
 type ThriftFramework struct {
-	pmap        map[string]thrift.ProcessorFunction
-	ln          net.Listener
-	connCount   int64
-	workerCount int
-	backlogSize int
-	workchan    chan work
-	wg          sync.WaitGroup
-	logfunc     ThriftLogFunction
+	pmap         map[string]thrift.ProcessorFunction
+	ln           net.Listener
+	connCount    int64
+	workingCount int64
+	writerCount  int64
+	workerCount  int
+	backlogSize  int
+	workchan     chan work
+	wg           sync.WaitGroup
+	logfunc      ThriftLogFunction
 }
 
 type Processor interface {
@@ -30,9 +32,25 @@ type Processor interface {
 func NewThriftFramework() *ThriftFramework {
 	return &ThriftFramework{
 		pmap:        map[string]thrift.ProcessorFunction{},
-		workerCount: runtime.NumCPU() * 2, // XXX: configurable concurrency!?
-		backlogSize: runtime.NumCPU() * 2,
+		workerCount: 1, //runtime.NumCPU() * 2, // XXX: configurable concurrency!?
+		backlogSize: 0, // runtime.NumCPU() * 2,
 	}
+}
+
+type TFStats struct {
+	// the number of reader goroutines (i.e. connections allocated)
+	ReaderCount int64
+	// the number of writer goroutines (i.e. connections allocated)
+	WriterCount int64
+	// the number of processing go-routines (i.e. doing actual work)
+	WorkingCount int64
+}
+
+func (tf *ThriftFramework) Stats() (stats TFStats) {
+	stats.ReaderCount = atomic.LoadInt64(&tf.connCount)
+	stats.WriterCount = atomic.LoadInt64(&tf.writerCount)
+	stats.WorkingCount = atomic.LoadInt64(&tf.workingCount)
+	return
 }
 
 func (tf *ThriftFramework) SetErrorLogger(logfunc ThriftLogFunction) *ThriftFramework {
@@ -68,14 +86,16 @@ func (tf *ThriftFramework) Addr() (net.Addr, error) {
 
 func (tf *ThriftFramework) worker(wchan <-chan work) {
 	for wrk := range wchan {
-		fmt.Printf("  worker <- %s\n", wrk.request)
+		atomic.AddInt64(&tf.workingCount, 1)
+		//		fmt.Printf("  worker <- %s\n", wrk.request)
 		response, err := wrk.pf.Run(wrk.request)
 		if err != nil {
 			tf.reportError("error handling %s message: %s", wrk.name, err)
 		}
-		fmt.Printf("  worker -> %s\n", response)
+		//		fmt.Printf("  worker -> %s\n", response)
 		wrk.response = response
 		wrk.writechan <- wrk
+		atomic.AddInt64(&tf.workingCount, -1)
 	}
 }
 
@@ -116,11 +136,12 @@ type work struct {
 }
 
 func (tf *ThriftFramework) writer(prot thrift.Protocol, wchan <-chan work) {
+	atomic.AddInt64(&tf.writerCount, 1)
+	defer atomic.AddInt64(&tf.writerCount, -1)
+
 	for wrk := range wchan {
-		fmt.Printf("now write %s:%d: %s\n", wrk.name, wrk.seqId, wrk.response)
 		wrk.pf.Write(wrk.seqId, wrk.response, prot)
 	}
-	fmt.Printf("writer complete\n")
 }
 
 func (tf *ThriftFramework) reader(conn net.Conn) {
@@ -149,10 +170,12 @@ func (tf *ThriftFramework) reader(conn net.Conn) {
 	for {
 		name, _, seqId, err := prot.ReadMessageBegin()
 		if err != nil {
-			// XXX: handle end of file gracefully
-			fmt.Printf("error\n")
-			tf.reportError("while reading message begin: %s", err)
-			return
+			if err, ok := err.(thrift.TransportException); ok && err.TypeID() == thrift.END_OF_FILE {
+				// connectionn terminated because client closed connection
+				break
+			}
+			tf.reportError("error reading message begin: %s", err)
+			break
 		}
 		pfunc, ok := tf.pmap[name]
 		if !ok {
@@ -161,6 +184,7 @@ func (tf *ThriftFramework) reader(conn net.Conn) {
 			exc := thrift.NewApplicationException(thrift.UNKNOWN_METHOD, "Unknown function "+name)
 			// XXX: concurrency error.  We really need to be writing this on the connection's
 			// write goroutine
+			fmt.Printf("RISKY BEHAVIOR\n")
 			prot.WriteMessageBegin(name, thrift.EXCEPTION, seqId)
 			exc.Write(prot)
 			prot.WriteMessageEnd()
@@ -185,8 +209,6 @@ func (tf *ThriftFramework) reader(conn net.Conn) {
 
 		// now lets' try to process said work
 		// XXX: buffered chan with non-blocking write
-		fmt.Printf("<- READ: %s:%d  %v\n", name, seqId, wrk)
-
 		tf.workchan <- wrk
 	}
 }
